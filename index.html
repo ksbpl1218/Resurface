@@ -54,7 +54,7 @@
     padding-bottom:22px; margin-bottom:26px;
     border-bottom:1px solid var(--border);
   }
-  .brand{display:flex; align-items:center; gap:14px;}
+  .brand{display:flex; align-items:center; gap:14px; flex-wrap:wrap;}
   .brand-mark{
     width:42px; height:42px; border-radius:50%;
     display:flex; align-items:center; justify-content:center;
@@ -68,6 +68,27 @@
     letter-spacing:2px; margin:0; color:var(--text);
   }
   .brand .tagline{margin:4px 0 0; font-size:13px; color:var(--text-muted);}
+  .visitor-counter{margin-left:14px;padding:5px 10px;border:1px solid var(--border);border-radius:8px;font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--text-faint);white-space:nowrap;display:flex;gap:8px;align-items:center;}
+  .visitor-counter b{color:var(--teal);font-weight:600;}
+
+  /* ---- Feedback modal ---- */
+  .feedback-overlay{position:fixed;inset:0;background:rgba(3,8,13,0.72);display:flex;align-items:center;justify-content:center;z-index:500;padding:16px;}
+  .feedback-overlay[hidden]{display:none;}
+  .feedback-modal{position:relative;background:var(--panel);border:1px solid var(--border-hi);border-radius:var(--radius);padding:24px;max-width:420px;width:100%;max-height:88vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,0.5);}
+  .feedback-modal h2{margin:0 0 6px;font-size:19px;color:var(--text);}
+  .feedback-sub{margin:0 0 18px;font-size:12.5px;color:var(--text-muted);line-height:1.5;}
+  .feedback-close{position:absolute;top:14px;right:14px;background:none;border:0;color:var(--text-faint);font-size:22px;line-height:1;cursor:pointer;padding:4px;}
+  .feedback-close:hover{color:var(--text);}
+  .feedback-field{margin-bottom:16px;}
+  .feedback-field label{display:block;font-size:13px;color:var(--text);margin-bottom:8px;font-weight:500;}
+  .feedback-field textarea{width:100%;background:var(--abyss-1);border:1px solid var(--border-hi);border-radius:8px;color:var(--text);padding:10px;font-family:inherit;font-size:13px;resize:vertical;box-sizing:border-box;}
+  .feedback-scale,.feedback-choice{display:flex;gap:8px;}
+  .feedback-scale button,.feedback-choice button{flex:1;padding:10px 6px;background:var(--abyss-1);border:1px solid var(--border-hi);border-radius:8px;color:var(--text-muted);font-family:inherit;font-size:13px;cursor:pointer;transition:all .15s;}
+  .feedback-scale button:hover,.feedback-choice button:hover{border-color:var(--teal-dim);}
+  .feedback-scale button.selected,.feedback-choice button.selected{background:var(--teal-dim);border-color:var(--teal);color:var(--text);font-weight:600;}
+  .feedback-scale-labels{display:flex;justify-content:space-between;margin-top:5px;font-size:10.5px;color:var(--text-faint);}
+  .feedback-error{color:var(--coral);font-size:12.5px;margin-bottom:12px;}
+  .feedback-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:6px;}
 
   .global-controls{display:flex; align-items:center; gap:16px; flex-wrap:wrap;}
   .gauge-label{
@@ -279,6 +300,7 @@
   @media (max-width:600px){
     .topbar{flex-direction:column;}
     .global-controls{width:100%; justify-content:space-between;}
+    .visitor-counter{margin-left:0;margin-top:2px;font-size:12px;}
   }
 
 
@@ -367,6 +389,7 @@
         <h1>RESURFACE</h1>
         <p class="tagline">Undo what the water did to your reds.</p>
       </div>
+      <div id="visitorCounter" class="visitor-counter">loading…</div>
     </div>
     <div class="global-controls">
       <div>
@@ -498,6 +521,59 @@
 <svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs id="filterDefs"></defs></svg>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<div id="feedbackOverlay" class="feedback-overlay" hidden>
+  <div class="feedback-modal" role="dialog" aria-modal="true" aria-labelledby="feedbackTitle">
+    <button id="feedbackClose" class="feedback-close" aria-label="Close">&times;</button>
+    <h2 id="feedbackTitle">Quick feedback?</h2>
+    <p class="feedback-sub">Your download is ready — mind sharing a few thoughts? All 4 questions are required.</p>
+
+    <div class="feedback-field">
+      <label>1. How easy was this to use?</label>
+      <div class="feedback-scale" data-field="ease">
+        <button type="button" data-value="1">1</button>
+        <button type="button" data-value="2">2</button>
+        <button type="button" data-value="3">3</button>
+        <button type="button" data-value="4">4</button>
+        <button type="button" data-value="5">5</button>
+      </div>
+      <div class="feedback-scale-labels"><span>Difficult</span><span>Very easy</span></div>
+    </div>
+
+    <div class="feedback-field">
+      <label>2. How would you rate the quality of the output?</label>
+      <div class="feedback-scale" data-field="quality">
+        <button type="button" data-value="1">1</button>
+        <button type="button" data-value="2">2</button>
+        <button type="button" data-value="3">3</button>
+        <button type="button" data-value="4">4</button>
+        <button type="button" data-value="5">5</button>
+      </div>
+      <div class="feedback-scale-labels"><span>Poor</span><span>Excellent</span></div>
+    </div>
+
+    <div class="feedback-field">
+      <label for="feedbackOther">3. Any other feedback?</label>
+      <textarea id="feedbackOther" rows="3" placeholder="Tell us what you think…"></textarea>
+    </div>
+
+    <div class="feedback-field">
+      <label>4. Will you continue using this tool?</label>
+      <div class="feedback-choice" data-field="continue">
+        <button type="button" data-value="Yes">Yes</button>
+        <button type="button" data-value="Maybe">Maybe</button>
+        <button type="button" data-value="No">No</button>
+      </div>
+    </div>
+
+    <div id="feedbackError" class="feedback-error" hidden>Please answer all 4 questions before submitting.</div>
+
+    <div class="feedback-actions">
+      <button id="feedbackSkip" class="btn btn-ghost" type="button">Maybe later</button>
+      <button id="feedbackSubmit" class="btn btn-primary" type="button">Send feedback</button>
+    </div>
+  </div>
+</div>
+
 <script>
 (function(){
   "use strict";
@@ -1426,6 +1502,7 @@
           return;
         }
         triggerDownload(blob, `${baseName(item.file.name)}-corrected.${isJpeg ? 'jpg' : 'png'}`);
+        maybeShowFeedbackPrompt();
       }, mime, 1.0);
     } catch(err){
       console.error('Photo export failed:', err);
@@ -1706,6 +1783,7 @@
       if(!blob.size) throw new Error('Encoding produced no data');
       triggerDownload(blob, `${baseName(item.file.name)}-corrected.mp4`);
       progressFill.style.width = '100%';
+      maybeShowFeedbackPrompt();
     } catch(err){
       console.error('Video export failed:', err);
       alert('Could not export this video: ' + (err && err.message ? err.message : err));
@@ -2023,6 +2101,7 @@
           composerStatus.textContent=`Export complete: ${w}×${h} WebM. MP4 conversion failed (${convErr.message||convErr}) — some apps like Instagram/TikTok may not accept WebM directly.`;
         }
       }
+      maybeShowFeedbackPrompt();
     }catch(err){console.error('Combined reel export failed:',err);composerStatus.textContent='Export failed: '+(err.message||err);alert('Could not export the reel. '+(err.message||err)+'\n\nTry Chrome, choose 1080p portrait/landscape, and export again without music if needed.');}
     finally{if(musicAudio)musicAudio.pause();if(audioCtx)await audioCtx.close().catch(()=>{});exportReelBtn.disabled=!items.some(i=>i.ready);exportReelBtn.textContent='Export';reelProgress.hidden=true;reelProgressFill.style.width='0%';items.forEach(i=>{if(i.video){i.video.pause();i.video.loop=true;i.video.currentTime=i.trimStart||0}})}
   }
@@ -2191,6 +2270,7 @@
       if(failed.length){
         alert(`Zip downloaded with ${zippedCount} of ${imageItems.length} photos. These couldn't be included and were skipped:\n\n${failed.join('\n')}`);
       }
+      maybeShowFeedbackPrompt();
     }catch(err){
       console.error('Bulk photo export failed:', err);
       alert('Could not create the zip: ' + (err && err.message ? err.message : err));
@@ -2218,6 +2298,132 @@
 
   updateEmptyState();
   renderTimeline();
+  trackVisitors();
+
+  // ---------- Feedback prompt ----------
+  // Shown once per browser session (not every single download — that would
+  // get old fast for someone exporting a batch of photos) after any
+  // successful download or export completes. Since this is a static site
+  // with no backend of its own, there's no way to silently auto-send an
+  // email without a third-party service and an account for it — a mailto:
+  // link (opens a pre-filled draft in the visitor's own mail app) is the
+  // most reliable option that works with zero setup. The visitor still has
+  // to hit send themselves in whatever mail app opens.
+  const feedbackState = { ease:null, quality:null, other:null, continue:null };
+  let feedbackShownThisSession = false;
+  const feedbackOverlay = document.getElementById('feedbackOverlay');
+  const feedbackOtherEl = document.getElementById('feedbackOther');
+  const feedbackErrorEl = document.getElementById('feedbackError');
+
+  function maybeShowFeedbackPrompt(){
+    if(feedbackShownThisSession) return;
+    feedbackShownThisSession = true;
+    // Small delay so this doesn't compete with the download's own browser UI
+    // (save dialogs, etc.) for attention the instant it fires.
+    setTimeout(() => { feedbackOverlay.hidden = false; }, 600);
+  }
+
+  document.querySelectorAll('.feedback-scale button, .feedback-choice button').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const group = btn.closest('[data-field]');
+      const field = group.dataset.field;
+      group.querySelectorAll('button').forEach(b => b.classList.toggle('selected', b===btn));
+      feedbackState[field] = btn.dataset.value;
+      feedbackErrorEl.hidden = true;
+    });
+  });
+
+  function closeFeedback(){
+    feedbackOverlay.hidden = true;
+  }
+  document.getElementById('feedbackClose').addEventListener('click', closeFeedback);
+  document.getElementById('feedbackSkip').addEventListener('click', closeFeedback);
+  feedbackOverlay.addEventListener('click', (e) => { if(e.target===feedbackOverlay) closeFeedback(); });
+
+  document.getElementById('feedbackSubmit').addEventListener('click', () => {
+    feedbackState.other = feedbackOtherEl.value.trim();
+    // All 4 questions are required — block submission until every one has
+    // an answer, rather than allowing a partial submission through.
+    if(!feedbackState.ease || !feedbackState.quality || !feedbackState.continue || !feedbackState.other){
+      feedbackErrorEl.hidden = false;
+      return;
+    }
+    const subject = 'Resurface feedback';
+    const body =
+      `Ease of use (1-5): ${feedbackState.ease}\n`+
+      `Quality of output (1-5): ${feedbackState.quality}\n`+
+      `Will continue using: ${feedbackState.continue}\n\n`+
+      `Other feedback:\n${feedbackState.other}`;
+    const mailto = `mailto:ksbpl1218@gmail.com?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+    window.location.href = mailto;
+    closeFeedback();
+  });
+
+  // Daily + all-time visitor counter, using counterapi.dev's free v1 API (no
+  // signup, no auth — a plain GET request per counter). "Unique" here means
+  // unique per browser/device, tracked via a localStorage flag — not a
+  // cryptographically verified unique person. Clearing site data, private
+  // browsing, or visiting from another device would each count as a new
+  // visitor. That's the standard, accepted trade-off for a lightweight
+  // counter with no backend of its own — a fully rigorous unique-visitor
+  // count isn't achievable from a static site without one.
+  //
+  // This never blocks or affects the rest of the app: any failure (the
+  // counter service being unreachable, rate-limited, etc.) is caught and
+  // just leaves the counter display hidden.
+  async function trackVisitors(){
+    const el = document.getElementById('visitorCounter');
+    if(!el) return;
+    try{
+      // A reasonably unique namespace so this doesn't collide with unrelated
+      // projects on this shared, public counter service.
+      const NS = 'resurface-v31-ksbpl1218';
+      // UTC-based so "today" resets at the same moment worldwide, rather
+      // than depending on each visitor's own local timezone.
+      const today = new Date().toISOString().slice(0,10);
+      const dailyName = `daily-${today}`;
+
+      const alreadyCountedEver = localStorage.getItem('resurface_counted_ever');
+      const lastCountedDay = localStorage.getItem('resurface_counted_day');
+
+      const totalUrl = alreadyCountedEver
+        ? `https://api.counterapi.dev/v1/${NS}/total/`
+        : `https://api.counterapi.dev/v1/${NS}/total/up`;
+      const dailyUrl = (lastCountedDay === today)
+        ? `https://api.counterapi.dev/v1/${NS}/${dailyName}/`
+        : `https://api.counterapi.dev/v1/${NS}/${dailyName}/up`;
+
+      const [totalRes, dailyRes] = await Promise.all([
+        fetch(totalUrl).then(r=>r.json()),
+        fetch(dailyUrl).then(r=>r.json())
+      ]);
+
+      // Response field naming isn't fully certain across API versions, so
+      // check every plausible shape rather than assuming one.
+      const pickCount = (res) => {
+        const candidates = [res?.count, res?.value, res?.data?.count, res?.data?.value, (typeof res?.data==='number'?res.data:undefined)];
+        const found = candidates.find(v => Number.isFinite(Number(v)));
+        return found!==undefined ? Number(found) : null;
+      };
+      const totalCount = pickCount(totalRes);
+      const dailyCount = pickCount(dailyRes);
+
+      if(!alreadyCountedEver) localStorage.setItem('resurface_counted_ever','1');
+      if(lastCountedDay !== today) localStorage.setItem('resurface_counted_day', today);
+
+      if(totalCount!==null || dailyCount!==null){
+        el.innerHTML = `<span>${dailyCount!==null?dailyCount:'—'} today</span><span style="opacity:.4">·</span><span><b>${totalCount!==null?totalCount:'—'}</b> total</span>`;
+      } else {
+        el.textContent = 'counter unavailable';
+      }
+    }catch(e){
+      // Nice-to-have stat only — never surface this as a blocking error, but
+      // still show *something* visible rather than leaving the box invisible
+      // with no way to tell whether the feature exists at all.
+      console.warn('Visitor counter unavailable:', e);
+      el.textContent = 'counter unavailable';
+    }
+  }
 })();
 </script>
 </body>
