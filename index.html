@@ -568,7 +568,6 @@
     <div id="feedbackError" class="feedback-error" hidden>Please answer all 4 questions before submitting.</div>
 
     <div class="feedback-actions">
-      <button id="feedbackSkip" class="btn btn-ghost" type="button">Maybe later</button>
       <button id="feedbackSubmit" class="btn btn-primary" type="button">Send feedback</button>
     </div>
   </div>
@@ -2301,26 +2300,53 @@
   trackVisitors();
 
   // ---------- Feedback prompt ----------
-  // Shown once per browser session (not every single download — that would
-  // get old fast for someone exporting a batch of photos) after any
-  // successful download or export completes. Since this is a static site
-  // with no backend of its own, there's no way to silently auto-send an
-  // email without a third-party service and an account for it — a mailto:
-  // link (opens a pre-filled draft in the visitor's own mail app) is the
-  // most reliable option that works with zero setup. The visitor still has
-  // to hit send themselves in whatever mail app opens.
+  // Two-tier behavior:
+  // 1. Right after a download/export completes, the prompt is dismissible
+  //    (the × closes it) — forcing a form on someone the instant they
+  //    successfully finish something would be bad manners.
+  // 2. If it gets dismissed without being submitted, that's remembered in
+  //    localStorage. The *next* time the page loads, the prompt appears
+  //    immediately and is NOT dismissible this time — no × shown, clicking
+  //    the backdrop does nothing — blocking use of the rest of the app
+  //    until it's answered, per the requirement that a skipped prompt gates
+  //    the next visit rather than being skippable forever.
+  //
+  // Since this is a static site with no backend of its own, there's no way
+  // to silently auto-send an email without a third-party service and an
+  // account for it — a mailto: link (opens a pre-filled draft in the
+  // visitor's own mail app) is the most reliable option that works with
+  // zero setup. The visitor still has to hit send themselves.
+  const FEEDBACK_PENDING_KEY = 'resurface_feedback_pending';
   const feedbackState = { ease:null, quality:null, other:null, continue:null };
   let feedbackShownThisSession = false;
+  let feedbackBlocking = false;
   const feedbackOverlay = document.getElementById('feedbackOverlay');
   const feedbackOtherEl = document.getElementById('feedbackOther');
   const feedbackErrorEl = document.getElementById('feedbackError');
+  const feedbackCloseBtn = document.getElementById('feedbackClose');
+
+  function openFeedback(blocking){
+    feedbackBlocking = blocking;
+    feedbackCloseBtn.style.display = blocking ? 'none' : '';
+    feedbackOverlay.hidden = false;
+  }
 
   function maybeShowFeedbackPrompt(){
     if(feedbackShownThisSession) return;
     feedbackShownThisSession = true;
     // Small delay so this doesn't compete with the download's own browser UI
     // (save dialogs, etc.) for attention the instant it fires.
-    setTimeout(() => { feedbackOverlay.hidden = false; }, 600);
+    setTimeout(() => openFeedback(false), 600);
+  }
+
+  // Called on page load, before the prompt would otherwise be reachable —
+  // if the last visit skipped feedback, this visit opens straight into the
+  // mandatory version instead of waiting for another download.
+  function checkPendingFeedbackOnLoad(){
+    if(localStorage.getItem(FEEDBACK_PENDING_KEY) === '1'){
+      feedbackShownThisSession = true;
+      openFeedback(true);
+    }
   }
 
   document.querySelectorAll('.feedback-scale button, .feedback-choice button').forEach(btn => {
@@ -2334,10 +2360,13 @@
   });
 
   function closeFeedback(){
+    // The mandatory version can't be dismissed without submitting — this is
+    // the actual enforcement mechanism, not just hiding the × button.
+    if(feedbackBlocking) return;
+    localStorage.setItem(FEEDBACK_PENDING_KEY, '1');
     feedbackOverlay.hidden = true;
   }
-  document.getElementById('feedbackClose').addEventListener('click', closeFeedback);
-  document.getElementById('feedbackSkip').addEventListener('click', closeFeedback);
+  feedbackCloseBtn.addEventListener('click', closeFeedback);
   feedbackOverlay.addEventListener('click', (e) => { if(e.target===feedbackOverlay) closeFeedback(); });
 
   document.getElementById('feedbackSubmit').addEventListener('click', () => {
@@ -2356,8 +2385,14 @@
       `Other feedback:\n${feedbackState.other}`;
     const mailto = `mailto:ksbpl1218@gmail.com?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
     window.location.href = mailto;
-    closeFeedback();
+    // Submitting always clears the pending flag and closes, regardless of
+    // whether this was the dismissible or mandatory version.
+    localStorage.removeItem(FEEDBACK_PENDING_KEY);
+    feedbackBlocking = false;
+    feedbackOverlay.hidden = true;
   });
+
+  checkPendingFeedbackOnLoad();
 
   // Daily + all-time visitor counter, using counterapi.dev's free v1 API (no
   // signup, no auth — a plain GET request per counter). "Unique" here means
