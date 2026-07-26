@@ -1624,7 +1624,11 @@
       const exportH = Math.max(2, Math.round(vr.sh*scale));
       if(!exportW || !exportH) throw new Error('Video has no readable dimensions yet');
 
-      const FPS = 30;
+      // 24fps instead of 30: a direct ~20% cut to both how many frames need
+      // to be seeked/captured and how many need encoding — the two biggest
+      // costs in this whole process — with minimal visible difference for
+      // typical footage (24fps is also the standard cinematic frame rate).
+      const FPS = 24;
       const totalFrames = Math.max(1, Math.round(clipDur*FPS));
 
       const canvas = document.createElement('canvas');
@@ -1655,7 +1659,11 @@
           ctx.drawImage(wmLayer, 0, 0);
           ctx.globalAlpha = 1;
         }
-        const frameBlob = await new Promise(res => canvas.toBlob(res, 'image/jpeg', 0.87));
+        // Intermediate JPEG quality reduced slightly (0.87 → 0.80): these are
+        // just staging images before the final H.264 encode, not the
+        // delivered quality — a small reduction here saves capture/write
+        // time and memory with no visible effect on the final result.
+        const frameBlob = await new Promise(res => canvas.toBlob(res, 'image/jpeg', 0.80));
         if(!frameBlob) throw new Error(`Frame ${i+1} of ${totalFrames} could not be rendered (possibly a browser memory limit)`);
         const name = `frame${String(i).padStart(5,'0')}.jpg`;
         ff.FS('writeFile', name, await fetchFile(frameBlob));
@@ -1674,16 +1682,24 @@
       ff.FS('writeFile', origName, await fetchFile(item.file));
       outName = 'output.mp4';
 
-      await ff.run(
+      // Generous timeout scaled to clip length (minimum 90s) — if encoding
+      // hasn't finished in that window, something is genuinely stuck rather
+      // than just taking a while, and this fails loudly with a clear message
+      // instead of leaving the export hanging indefinitely with no feedback.
+      await withTimeout(ff.run(
         '-framerate', String(FPS), '-i', 'frame%05d.jpg',
         '-ss', String(trimStart), '-t', String(clipDur), '-i', origName,
         '-map', '0:v:0', '-map', '1:a:0?',
-        '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-pix_fmt', 'yuv420p',
+        // 'ultrafast' (fastest x264 preset) + crf 23 (still good quality —
+        // Instagram/TikTok/etc. re-compress everything on upload anyway, so
+        // squeezing out marginal extra quality here isn't worth the time
+        // cost). This is the single biggest lever on actual encode time.
+        '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '23', '-pix_fmt', 'yuv420p',
         '-c:a', 'aac', '-b:a', '192k',
         '-shortest',
         '-movflags', '+faststart',
         outName
-      );
+      ), Math.max(90000, totalFrames * 2000), 'Encoding took too long and was stopped — try a shorter clip, or a lower resolution source video.');
 
       const data = ff.FS('readFile', outName);
       const blob = new Blob([data.buffer], {type:'video/mp4'});
@@ -1899,30 +1915,31 @@
       });
     }
     const {createFFmpeg}=window.FFmpeg;
-    // Multi-threaded core: uses actual Web Workers + SharedArrayBuffer to
-    // spread encoding across multiple CPU cores instead of one. This is only
-    // usable because cross-origin isolation is already required (and set up
-    // via coi-serviceworker.js) for SharedArrayBuffer itself — the same
-    // prerequisite multi-threading needs — so there's no additional cost to
-    // using it. Falls back to the single-threaded core automatically if
-    // multi-threading genuinely isn't available (very old browsers, or a
-    // device that reports too few cores to bother).
-    const useMT = (navigator.hardwareConcurrency||1) > 1;
-    const corePath = useMT
-      ? 'https://unpkg.com/@ffmpeg/core-mt@0.11.0/dist/ffmpeg-core.js'
-      : 'https://unpkg.com/@ffmpeg/core@0.11.0/dist/ffmpeg-core.js';
-    let ff;
-    try{
-      ff=createFFmpeg({log:false,corePath});
-      await ff.load();
-    }catch(mtErr){
-      if(!useMT) throw mtErr;
-      console.warn('Multi-threaded video converter failed to load, falling back to single-threaded:', mtErr);
-      ff=createFFmpeg({log:false,corePath:'https://unpkg.com/@ffmpeg/core@0.11.0/dist/ffmpeg-core.js'});
-      await ff.load();
-    }
+    // Reverted from the multi-threaded core back to single-threaded. The
+    // multi-threaded build spawns actual Worker threads with their own
+    // script-loading requirements (on top of needing SharedArrayBuffer),
+    // and that's a strong suspect for exports hanging silently at the
+    // encoding step with no error — Worker creation/messaging failures don't
+    // always surface as a rejected promise. Single-threaded is slower but
+    // known-reliable, which matters more than the speed gain here.
+    const ff=createFFmpeg({log:false,corePath:'https://unpkg.com/@ffmpeg/core@0.11.0/dist/ffmpeg-core.js'});
+    // Wrapped in a timeout so this can never hang forever with no feedback,
+    // regardless of the cause — if it doesn't finish in a reasonable window,
+    // fail loudly instead of leaving the export stuck indefinitely.
+    await withTimeout(ff.load(), 60000, 'The video converter took too long to load. Check your internet connection and try again.');
     ffmpegInstance=ff;
     return ff;
+  }
+  // Races a promise against a timeout so a hung operation (a Worker that
+  // never responds, a network request that stalls, etc.) fails loudly with a
+  // clear message instead of leaving the UI stuck indefinitely with no
+  // feedback — the exact failure mode that made the encoding-stage hang so
+  // hard to diagnose.
+  function withTimeout(promise, ms, message){
+    return Promise.race([
+      promise,
+      new Promise((_, reject) => setTimeout(() => reject(new Error(message)), ms))
+    ]);
   }
   // Re-encodes a recorded WebM blob into a standard H.264/AAC MP4 (yuv420p,
   // faststart) — the format nearly every social platform's upload flow
@@ -1945,7 +1962,14 @@
     // math itself can introduce a systematic speed error in the output,
     // independent of whether the original recording was actually fine.
     // Passthrough sidesteps that risk entirely by not retiming anything.
-    await ff.run('-i',inName,'-vsync','0','-c:v','libx264','-preset','veryfast','-crf','20','-pix_fmt','yuv420p','-c:a','aac','-b:a','192k','-movflags','+faststart',outName);
+    // Timeout scaled roughly to file size (minimum 90s) — if this hasn't
+    // finished in that window, it's genuinely stuck rather than just slow,
+    // and this fails loudly instead of hanging the export indefinitely.
+    await withTimeout(
+      ff.run('-i',inName,'-vsync','0','-c:v','libx264','-preset','ultrafast','-crf','23','-pix_fmt','yuv420p','-c:a','aac','-b:a','192k','-movflags','+faststart',outName),
+      Math.max(90000, (blob.size/1_000_000) * 3000),
+      'MP4 conversion took too long and was stopped — try a shorter or smaller reel.'
+    );
     const data=ff.FS('readFile',outName);
     try{ff.FS('unlink',inName);ff.FS('unlink',outName);}catch(e){}
     return new Blob([data.buffer],{type:'video/mp4'});
