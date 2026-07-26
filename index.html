@@ -1899,8 +1899,28 @@
       });
     }
     const {createFFmpeg}=window.FFmpeg;
-    const ff=createFFmpeg({log:false,corePath:'https://unpkg.com/@ffmpeg/core@0.11.0/dist/ffmpeg-core.js'});
-    await ff.load();
+    // Multi-threaded core: uses actual Web Workers + SharedArrayBuffer to
+    // spread encoding across multiple CPU cores instead of one. This is only
+    // usable because cross-origin isolation is already required (and set up
+    // via coi-serviceworker.js) for SharedArrayBuffer itself — the same
+    // prerequisite multi-threading needs — so there's no additional cost to
+    // using it. Falls back to the single-threaded core automatically if
+    // multi-threading genuinely isn't available (very old browsers, or a
+    // device that reports too few cores to bother).
+    const useMT = (navigator.hardwareConcurrency||1) > 1;
+    const corePath = useMT
+      ? 'https://unpkg.com/@ffmpeg/core-mt@0.11.0/dist/ffmpeg-core.js'
+      : 'https://unpkg.com/@ffmpeg/core@0.11.0/dist/ffmpeg-core.js';
+    let ff;
+    try{
+      ff=createFFmpeg({log:false,corePath});
+      await ff.load();
+    }catch(mtErr){
+      if(!useMT) throw mtErr;
+      console.warn('Multi-threaded video converter failed to load, falling back to single-threaded:', mtErr);
+      ff=createFFmpeg({log:false,corePath:'https://unpkg.com/@ffmpeg/core@0.11.0/dist/ffmpeg-core.js'});
+      await ff.load();
+    }
     ffmpegInstance=ff;
     return ff;
   }
