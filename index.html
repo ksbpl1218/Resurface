@@ -730,42 +730,29 @@
     // red/orange AND saturated) is the reliable signal on its own.
     const redProtected=redRatio>.09;
 
-    // Red ceiling raised from 1.55 to 1.75, and the red-protected fallback
-    // cap raised from 1.30 to 1.45 — the previous ceiling was verified
-    // correct but wasn't strong enough for how severely red-depleted a
-    // heavily cyan/green-cast scene (like a wide ambient reef shot) can be.
-    let rg=clamp(Math.pow(gg/Math.max(8,gr),.62),1,1.75);
-    if(redProtected) rg=Math.min(rg,1.45);
-    // Green-channel reduction: until now, green was treated as a fixed
-    // reference point that red/blue get boosted relative to — there was no
-    // way to address a scene where green ITSELF is the dominant, excessive
-    // channel (common in certain water conditions — shallow, algae-rich,
-    // coastal), as opposed to the classic "blue water absorbed the red"
-    // case. Only engages when green clearly exceeds the red/blue average,
-    // specifically to avoid weakening the existing, already-working
-    // correction for ordinary blue-cast scenes where a slightly-higher
-    // green channel is normal and not the actual problem. Threshold lowered
-    // (14 → 6) and maximum reduction increased (22% → 40%) — the mechanism
-    // itself was verified correct, but too conservative for a heavily
-    // cyan-cast scene where both green AND blue are elevated together.
+    // Substantially reduced dampening across all three channels — two
+    // rounds of incremental tuning still wasn't producing a strong enough
+    // visible shift, so this raises the exponent much closer to a direct,
+    // undampened response (0.62 → 0.9) and raises the ceilings further
+    // (1.75 → 2.3), rather than another small nudge.
+    let rg=clamp(Math.pow(gg/Math.max(8,gr),.9),1,2.3);
+    if(redProtected) rg=Math.min(rg,1.8);
+    // Green/blue excess thresholds dropped to engage almost immediately
+    // (were 2, now 0) and reach their full effect over a much narrower
+    // range (35 → 20) — the mechanism and direction were correct, but
+    // required too much measured excess before contributing meaningfully.
     const rbAvg=(gr+gb)/2;
     const greenExcess=gg-rbAvg;
     let gg_gain=1;
-    if(greenExcess>2){
-      const t=clamp((greenExcess-2)/35,0,1);
-      gg_gain=1-t*0.42;
+    if(greenExcess>0){
+      const t=clamp(greenExcess/20,0,1);
+      gg_gain=1-t*0.55;
     }
-    // Blue reduction redesigned to measure excess relative to red directly,
-    // matching the pattern used for green above — the previous formula
-    // measured blue relative to green, which barely engages when green and
-    // blue are both elevated together (exactly what a cyan-cast scene looks
-    // like), since their ratio stays close to 1 even when both are far
-    // above red.
     const blueExcess=gb-gr;
     let bg=1;
-    if(blueExcess>2){
-      const t=clamp((blueExcess-2)/35,0,1);
-      bg=1-t*0.40;
+    if(blueExcess>0){
+      const t=clamp(blueExcess/20,0,1);
+      bg=1-t*0.55;
     }
     const origLum=.2126*gr+.7152*gg+.0722*gb;
     const corrLum=.2126*gr*rg+.7152*gg*gg_gain+.0722*gb*bg;
