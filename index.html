@@ -720,43 +720,35 @@
     const gr=Math.exp(logR/n)-1,gg=Math.exp(logG/n)-1,gb=Math.exp(logB/n)-1;
     const p95r=percentile(rs,.95),black=percentile(ls,.008),median=percentile(ls,.50),p90=percentile(ls,.90),white=percentile(ls,.995);
     const clipRatio=clipped/Math.max(1,total),shadowRatio=deepShadow/Math.max(1,total),redRatio=redPixels/Math.max(1,total);
-    // Dropped the old `|| p95r>205` condition entirely — it didn't actually
-    // measure "this scene already has good red," it measured "something in
-    // the frame is bright," since bright/white pixels (sand, highlights, a
-    // pale anemone tip) have high red, green, AND blue together regardless
-    // of the scene's overall cast. That made it trigger on nearly any real
-    // photo or video and cap the correction for reasons unrelated to actual
-    // color balance. redRatio (percentage of pixels that are genuinely
-    // red/orange AND saturated) is the reliable signal on its own.
+    // White balance, rewritten from scratch using the standard, textbook
+    // gray-world algorithm rather than the accumulated layers of dampened
+    // exponents and per-channel threshold logic this had grown into.
+    // Gray-world's premise: average out enough of a real scene's colors and
+    // the result should be roughly neutral gray. Whatever the average
+    // actually leans toward is the color cast, and correcting it is just
+    // scaling each channel individually back to match the overall average —
+    // no separate formula needed for red vs green vs blue, no dampening
+    // exponent, no excess thresholds to tune. This is simpler specifically
+    // because simpler is easier to verify actually does what it claims.
+    const target=(gr+gg+gb)/3;
+    let rg=clamp(target/Math.max(8,gr),1,2.4); // red only ever gets boosted, never reduced below its own value
+    let gg_gain=clamp(target/Math.max(8,gg),.55,1.15);
+    let bg=clamp(target/Math.max(8,gb),.55,1.15);
+    // Safeguard against over-boosting a scene that's already well-lit with
+    // red (a close-up strobe-lit macro shot, where boosting further would
+    // oversaturate it) — only engages when a meaningful share of the frame
+    // is genuinely red/saturated, not just "something in the frame is bright."
+    // Skips correction entirely rather than just capping red: red already
+    // being dominant inflates the target average, which would otherwise
+    // make green/blue look artificially deficient and get boosted to
+    // compensate — the opposite of what a protected, already-warm scene needs.
     const redProtected=redRatio>.09;
-
-    // Substantially reduced dampening across all three channels — two
-    // rounds of incremental tuning still wasn't producing a strong enough
-    // visible shift, so this raises the exponent much closer to a direct,
-    // undampened response (0.62 → 0.9) and raises the ceilings further
-    // (1.75 → 2.3), rather than another small nudge.
-    let rg=clamp(Math.pow(gg/Math.max(8,gr),.9),1,2.3);
-    if(redProtected) rg=Math.min(rg,1.8);
-    // Green/blue excess thresholds dropped to engage almost immediately
-    // (were 2, now 0) and reach their full effect over a much narrower
-    // range (35 → 20) — the mechanism and direction were correct, but
-    // required too much measured excess before contributing meaningfully.
-    const rbAvg=(gr+gb)/2;
-    const greenExcess=gg-rbAvg;
-    let gg_gain=1;
-    if(greenExcess>0){
-      const t=clamp(greenExcess/20,0,1);
-      gg_gain=1-t*0.55;
-    }
-    const blueExcess=gb-gr;
-    let bg=1;
-    if(blueExcess>0){
-      const t=clamp(blueExcess/20,0,1);
-      bg=1-t*0.55;
-    }
+    if(redProtected){ rg=Math.min(rg,1.6); gg_gain=1; bg=1; }
     const origLum=.2126*gr+.7152*gg+.0722*gb;
     const corrLum=.2126*gr*rg+.7152*gg*gg_gain+.0722*gb*bg;
     const lumScale=clamp(origLum/Math.max(1,corrLum),.90,1.02);
+
+
 
 
 
