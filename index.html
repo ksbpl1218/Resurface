@@ -720,20 +720,21 @@
     const gr=Math.exp(logR/n)-1,gg=Math.exp(logG/n)-1,gb=Math.exp(logB/n)-1;
     const p95r=percentile(rs,.95),black=percentile(ls,.008),median=percentile(ls,.50),p90=percentile(ls,.90),white=percentile(ls,.995);
     const clipRatio=clipped/Math.max(1,total),shadowRatio=deepShadow/Math.max(1,total),redRatio=redPixels/Math.max(1,total);
-    // Raised from .025 (2.5%) to .09 (9%) — a small colorful subject (a
-    // clownfish, for example) within an otherwise blue-cast wide shot could
-    // cross the old, much lower threshold and cap red correction for the
-    // *entire* frame, even though the water around it still badly needed
-    // it. A genuine strobe-lit macro shot (the case this is actually meant
-    // to protect) fills a much larger share of the frame than that, so it
-    // still correctly triggers at this higher bar.
-    const redProtected=redRatio>.09||p95r>205;
+    // Dropped the old `|| p95r>205` condition entirely — it didn't actually
+    // measure "this scene already has good red," it measured "something in
+    // the frame is bright," since bright/white pixels (sand, highlights, a
+    // pale anemone tip) have high red, green, AND blue together regardless
+    // of the scene's overall cast. That made it trigger on nearly any real
+    // photo or video and cap the correction for reasons unrelated to actual
+    // color balance. redRatio (percentage of pixels that are genuinely
+    // red/orange AND saturated) is the reliable signal on its own.
+    const redProtected=redRatio>.09;
 
     // Red ceiling raised from 1.55 to 1.75, and the red-protected fallback
     // cap raised from 1.30 to 1.45 — the previous ceiling was verified
     // correct but wasn't strong enough for how severely red-depleted a
     // heavily cyan/green-cast scene (like a wide ambient reef shot) can be.
-    let rg=clamp(Math.pow(gg/Math.max(8,gr),.48),1,1.75);
+    let rg=clamp(Math.pow(gg/Math.max(8,gr),.62),1,1.75);
     if(redProtected) rg=Math.min(rg,1.45);
     // Green-channel reduction: until now, green was treated as a fixed
     // reference point that red/blue get boosted relative to — there was no
@@ -750,9 +751,9 @@
     const rbAvg=(gr+gb)/2;
     const greenExcess=gg-rbAvg;
     let gg_gain=1;
-    if(greenExcess>6){
-      const t=clamp((greenExcess-6)/45,0,1);
-      gg_gain=1-t*0.40;
+    if(greenExcess>2){
+      const t=clamp((greenExcess-2)/35,0,1);
+      gg_gain=1-t*0.42;
     }
     // Blue reduction redesigned to measure excess relative to red directly,
     // matching the pattern used for green above — the previous formula
@@ -762,9 +763,9 @@
     // above red.
     const blueExcess=gb-gr;
     let bg=1;
-    if(blueExcess>6){
-      const t=clamp((blueExcess-6)/45,0,1);
-      bg=1-t*0.35;
+    if(blueExcess>2){
+      const t=clamp((blueExcess-2)/35,0,1);
+      bg=1-t*0.40;
     }
     const origLum=.2126*gr+.7152*gg+.0722*gb;
     const corrLum=.2126*gr*rg+.7152*gg*gg_gain+.0722*gb*bg;
@@ -1950,7 +1951,16 @@
       item.factors = result.averaged;
       item.factorKeyframes = result.keyframes;
     } catch(e){
-      item.factors = {r:1.4, g:1.0, b:0.8, lumScale:1, exposureEV:0, backscatterScore:0, black:0, p99:245}; // fallback if frames aren't decodable
+      // If this is ever hit, it means color factors couldn't be computed at
+      // all for this clip (a decode/seek failure) — logged explicitly so a
+      // silent failure here doesn't just look like "the correction is weak"
+      // with no trace of why. Fallback values kept directionally consistent
+      // with the current correction strength rather than old placeholder
+      // numbers, so a failure here doesn't produce an obviously-undercorrected,
+      // greenish-looking result that's indistinguishable from the real bug
+      // this was all chasing.
+      console.warn('computeVideoFactors failed, using fallback correction:', e);
+      item.factors = {r:1.4, g:0.85, b:0.75, lumScale:1, exposureEV:0.1, backscatterScore:0, black:5, p99:240};
       item.factorKeyframes = null;
     }
 
