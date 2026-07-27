@@ -224,6 +224,9 @@
   .meta{font-family:var(--font-mono); font-size:11px; color:var(--text-faint); margin:0;}
 
   .intensity-row{display:flex; align-items:center; gap:10px;}
+  .bg-toggle-row{display:flex; align-items:center; gap:8px; margin-top:8px; font-size:12.5px; color:var(--text-muted); cursor:pointer; user-select:none;}
+  .bg-intensity-row{display:flex; align-items:center; gap:10px; margin-top:8px;}
+  .bg-toggle-row input[type=checkbox]{accent-color:var(--teal); width:15px; height:15px; cursor:pointer;}
   .intensity-row .mono{font-family:var(--font-mono); font-size:10px; color:var(--text-faint); letter-spacing:0.5px;}
   .item-intensity{flex:1;}
   .item-intensity-val{font-family:var(--font-mono); font-size:12px; color:var(--coral); min-width:32px; text-align:right;}
@@ -717,14 +720,61 @@
     const gr=Math.exp(logR/n)-1,gg=Math.exp(logG/n)-1,gb=Math.exp(logB/n)-1;
     const p95r=percentile(rs,.95),black=percentile(ls,.008),median=percentile(ls,.50),p90=percentile(ls,.90),white=percentile(ls,.995);
     const clipRatio=clipped/Math.max(1,total),shadowRatio=deepShadow/Math.max(1,total),redRatio=redPixels/Math.max(1,total);
-    const redProtected=redRatio>.025||p95r>205;
+    // Raised from .025 (2.5%) to .09 (9%) — a small colorful subject (a
+    // clownfish, for example) within an otherwise blue-cast wide shot could
+    // cross the old, much lower threshold and cap red correction for the
+    // *entire* frame, even though the water around it still badly needed
+    // it. A genuine strobe-lit macro shot (the case this is actually meant
+    // to protect) fills a much larger share of the frame than that, so it
+    // still correctly triggers at this higher bar.
+    const redProtected=redRatio>.09||p95r>205;
 
-    let rg=clamp(Math.pow(gg/Math.max(8,gr),.48),1,1.55);
-    if(redProtected) rg=Math.min(rg,1.10);
-    let bg=clamp(Math.pow(gg/Math.max(8,gb),.30),.84,1.03);
+    // Red ceiling raised from 1.55 to 1.75, and the red-protected fallback
+    // cap raised from 1.30 to 1.45 — the previous ceiling was verified
+    // correct but wasn't strong enough for how severely red-depleted a
+    // heavily cyan/green-cast scene (like a wide ambient reef shot) can be.
+    let rg=clamp(Math.pow(gg/Math.max(8,gr),.48),1,1.75);
+    if(redProtected) rg=Math.min(rg,1.45);
+    // Green-channel reduction: until now, green was treated as a fixed
+    // reference point that red/blue get boosted relative to — there was no
+    // way to address a scene where green ITSELF is the dominant, excessive
+    // channel (common in certain water conditions — shallow, algae-rich,
+    // coastal), as opposed to the classic "blue water absorbed the red"
+    // case. Only engages when green clearly exceeds the red/blue average,
+    // specifically to avoid weakening the existing, already-working
+    // correction for ordinary blue-cast scenes where a slightly-higher
+    // green channel is normal and not the actual problem. Threshold lowered
+    // (14 → 6) and maximum reduction increased (22% → 40%) — the mechanism
+    // itself was verified correct, but too conservative for a heavily
+    // cyan-cast scene where both green AND blue are elevated together.
+    const rbAvg=(gr+gb)/2;
+    const greenExcess=gg-rbAvg;
+    let gg_gain=1;
+    if(greenExcess>6){
+      const t=clamp((greenExcess-6)/45,0,1);
+      gg_gain=1-t*0.40;
+    }
+    // Blue reduction redesigned to measure excess relative to red directly,
+    // matching the pattern used for green above — the previous formula
+    // measured blue relative to green, which barely engages when green and
+    // blue are both elevated together (exactly what a cyan-cast scene looks
+    // like), since their ratio stays close to 1 even when both are far
+    // above red.
+    const blueExcess=gb-gr;
+    let bg=1;
+    if(blueExcess>6){
+      const t=clamp((blueExcess-6)/45,0,1);
+      bg=1-t*0.35;
+    }
     const origLum=.2126*gr+.7152*gg+.0722*gb;
-    const corrLum=.2126*gr*rg+.7152*gg+.0722*gb*bg;
+    const corrLum=.2126*gr*rg+.7152*gg*gg_gain+.0722*gb*bg;
     const lumScale=clamp(origLum/Math.max(1,corrLum),.90,1.02);
+
+
+
+
+
+
 
     // Preserve original brightness. Only darken when highlights are at risk.
     let exposureEV=0;
@@ -757,7 +807,7 @@
       }
     }
     const backscatterScore=clamp(candidates/Math.max(1,checked)*12,0,1);
-    return {r:rg,g:1,b:bg,lumScale,black,median,p90,p99:white,exposureEV,highlightCompression,shadowLift,redProtected,
+    return {r:rg,g:gg_gain,b:bg,lumScale,black,median,p90,p99:white,exposureEV,highlightCompression,shadowLift,redProtected,
       shadowCrush,backscatterScore,sceneBlueGreen:blueGreen/Math.max(1,total)};
   }
 
@@ -775,7 +825,7 @@
   function matrixValues(factors, frac){
     const exposure=Math.pow(2,(factors.exposureEV||0)*frac*.45);
     const l=(1+(factors.lumScale-1)*frac)*exposure;
-    const gainR=(1+(factors.r-1)*frac)*l,gainG=l,gainB=(1+(factors.b-1)*frac)*l;
+    const gainR=(1+(factors.r-1)*frac)*l,gainG=(1+((factors.g??1)-1)*frac)*l,gainB=(1+(factors.b-1)*frac)*l;
     // Interpolate the stretch endpoints themselves (not the derived amount)
     // between identity (0..1) and full strength (black..p99) so frac=0 is
     // always an exact no-op, matching applyCorrectionV2's early return when
@@ -817,12 +867,152 @@
     return out;
   }
 
+  // Detects likely "background" regions using local sharpness rather than
+  // brightness: a shallow-depth-of-field macro shot has an in-focus subject
+  // (lots of fine detail/edges) against an out-of-focus, blurry backdrop
+  // (very little local detail) — and that's true regardless of whether the
+  // background happens to be bright or dark. Returns a Float32Array (one
+  // entry per pixel) of background-likelihood from 0 (sharp/subject) to 1
+  // (blurry/background). This is a heuristic, not true subject segmentation
+  // — it can't distinguish "blurry" from "genuinely flat/plain," so a subject
+  // photographed against a smooth, texture-less surface may get partially
+  // caught by it too.
+  // ---------- AI subject segmentation (for "Black background") ----------
+  // The brightness/blur heuristic (computeFocusBackgroundMask, below) can't
+  // reliably distinguish "sharp subject detail near the frame edge" from
+  // "sharp background near the frame edge" — that requires actually
+  // recognizing what the subject IS, not just measuring local pixel
+  // statistics. This uses a real, general-purpose (not limited to specific
+  // object types) subject-segmentation model that runs entirely in the
+  // browser via ONNX Runtime Web/WebAssembly — nothing is uploaded anywhere.
+  // Loaded lazily (only once "Black background" is actually used) since the
+  // model is a real download, same pattern as the video converter.
+  let bgRemovalLib = null;
+  async function loadBgRemovalLib(){
+    if(bgRemovalLib) return bgRemovalLib;
+    const mod = await import('https://cdn.jsdelivr.net/npm/@imgly/background-removal@1.5.5/dist/index.mjs');
+    bgRemovalLib = mod;
+    return mod;
+  }
+  // Runs AI segmentation once per photo and caches the result as a canvas
+  // (item.aiMaskCanvas) whose alpha channel is the subject-confidence mask
+  // (255 = subject, 0 = background) — cached because re-running inference on
+  // every slider tick or re-render would be far too slow to be usable.
+  async function computeAISegmentationMask(item, onProgress){
+    const { removeBackground } = await loadBgRemovalLib();
+    const resultBlob = await withTimeout(
+      removeBackground(item.url, {
+        // 'large' — per the library's published docs, this is the tier
+        // described as giving "maximum edge quality," which matters most
+        // for exactly the kind of subject that's been hardest to get right:
+        // thin, fine structures like glassy skeleton-shrimp legs or
+        // nudibranch cerata. Costs a bigger download and slower inference
+        // than the 'medium' default, which is a real trade-off worth
+        // knowing about, but this toggle is an explicit, deliberate choice
+        // the user makes per photo, not something running by default.
+        model: 'large',
+        progress: (key, current, total) => {
+          if(onProgress && total>0) onProgress(Math.round((current/total)*100));
+        }
+      }),
+      45000,
+      'Subject detection took too long and was stopped.'
+    );
+    const resultUrl = URL.createObjectURL(resultBlob);
+    try{
+      const maskImg = await new Promise((resolve, reject) => {
+        const im = new Image();
+        im.onload = () => resolve(im);
+        im.onerror = () => reject(new Error('Could not read the subject detection result'));
+        im.src = resultUrl;
+      });
+      const mc = document.createElement('canvas');
+      mc.width = maskImg.naturalWidth; mc.height = maskImg.naturalHeight;
+      mc.getContext('2d').drawImage(maskImg, 0, 0);
+      item.aiMaskCanvas = mc;
+    } finally {
+      URL.revokeObjectURL(resultUrl);
+    }
+  }
+
+  function computeFocusBackgroundMask(d, w, h){
+    const lum=new Float32Array(w*h);
+    for(let p=0,i=0;p<lum.length;p++,i+=4) lum[p]=.2126*d[i]+.7152*d[i+1]+.0722*d[i+2];
+    const detail=new Float32Array(w*h);
+    for(let y=1;y<h-1;y++){
+      const row=y*w;
+      for(let x=1;x<w-1;x++){
+        const p=row+x;
+        detail[p]=Math.abs(lum[p+1]-lum[p-1])+Math.abs(lum[p+w]-lum[p-w]);
+      }
+    }
+    // Separable box blur so the mask reads as coherent regions rather than a
+    // speckle of individually-sharp pixels, and so the transition between
+    // subject and background is gradual rather than a hard, artifact-prone edge.
+    const RADIUS=4, temp=new Float32Array(w*h), smoothed=new Float32Array(w*h);
+    for(let y=0;y<h;y++){
+      const row=y*w; let sum=0;
+      for(let x=-RADIUS;x<=RADIUS;x++) sum+=detail[row+clamp(x,0,w-1)];
+      for(let x=0;x<w;x++){
+        temp[row+x]=sum/(RADIUS*2+1);
+        sum+=detail[row+clamp(x+RADIUS+1,0,w-1)]-detail[row+clamp(x-RADIUS,0,w-1)];
+      }
+    }
+    for(let x=0;x<w;x++){
+      let sum=0;
+      for(let y=-RADIUS;y<=RADIUS;y++) sum+=temp[clamp(y,0,h-1)*w+x];
+      for(let y=0;y<h;y++){
+        smoothed[y*w+x]=sum/(RADIUS*2+1);
+        sum+=temp[clamp(y+RADIUS+1,0,h-1)*w+x]-temp[clamp(y-RADIUS,0,h-1)*w+x];
+      }
+    }
+    // Normalize against this photo's own sharpest region (not a fixed
+    // constant) so the mask adapts to each image's actual contrast range,
+    // rather than assuming a fixed absolute sharpness level.
+    let maxDetail=1;
+    for(let p=0;p<smoothed.length;p++) if(smoothed[p]>maxDetail) maxDetail=smoothed[p];
+    const norm=Math.max(1,maxDetail*0.35);
+    // Radial component: guarantees a visible, reliable effect even when the
+    // background isn't blurry (a sharp, in-focus rocky/coral substrate, for
+    // example — the sharpness signal alone correctly leaves that untouched,
+    // since it reads as "detailed" just like a genuine subject would). Most
+    // macro/wildlife compositions keep the subject roughly centered, so
+    // distance from the frame's center is a second, independent signal:
+    // pixels within the inner ~32% of the frame's radius are fully
+    // protected regardless of this signal, ramping smoothly up to full
+    // effect by ~80% of the way to the corners.
+    //
+    // The radial signal is gated by sharpness rather than combined with
+    // max(): a pixel that's genuinely sharp — a subject's fine detail
+    // extending toward the edge, like a cerata tip or an outstretched fin —
+    // stays strongly protected almost regardless of how far from center it
+    // is, since local sharpness alone can't distinguish "sharp subject
+    // detail near the edge" from "sharp background near the edge." Radial
+    // distance only gets to contribute meaningfully once a pixel is at
+    // least somewhat blurry; a small floor (15%) keeps a little effect on
+    // far corners even when they're sharp, so a fully in-focus background
+    // still gets partially darkened rather than completely untouched.
+    const cx=w/2, cy=h/2, maxR=Math.sqrt(cx*cx+cy*cy);
+    const mask=new Float32Array(w*h);
+    for(let y=0;y<h;y++){
+      for(let x=0;x<w;x++){
+        const p=y*w+x;
+        const blurBg=1-clamp(smoothed[p]/norm,0,1);
+        const dx=x-cx, dy=y-cy, r=Math.sqrt(dx*dx+dy*dy)/maxR;
+        const radialBg=smoothstep(0.32,0.80,r);
+        const blurGate=smoothstep(0.05,0.4,blurBg);
+        mask[p]=radialBg*(0.15+0.85*blurGate);
+      }
+    }
+    return mask;
+  }
+
   function applyCorrectionV2(canvas,item,intensityPct){
     const strength=clamp(intensityPct/100,0,1);
     if(strength<=0) return;
     const ctx=canvas.getContext('2d',{willReadFrequently:true});
     const im=ctx.getImageData(0,0,canvas.width,canvas.height),d=im.data,f=item.factors;
-    const gainR=1+(f.r-1)*strength,gainB=1+(f.b-1)*strength;
+    const gainR=1+(f.r-1)*strength,gainB=1+(f.b-1)*strength,gainGCh=1+((f.g??1)-1)*strength;
     const lumScale=1+(f.lumScale-1)*strength,exposure=Math.pow(2,(f.exposureEV||0)*strength);
     const shoulder=(f.highlightCompression||.1)*strength,shadowLift=(f.shadowLift||0)*strength;
     // Pushed harder: was +2.2*strength capped at 18. A deeper black point
@@ -836,14 +1026,87 @@
     // Contrast punch roughly doubled (was .045) to match the punchier
     // "hero shot" look instead of the flatter natural-restoration default.
     const contrast=1+.09*strength,vibrance=.055*strength;
-    const crushAmt=(f.shadowCrush||.30)*strength,toe=46;
+    // The "Black background" toggle overrides the automatic, scene-based
+    // shadowCrush estimate with a fixed maximum, and widens the toe
+    // threshold so a broader range of background tones gets pulled toward
+    // black — not just already-near-black pixels. This still scales with
+    // the intensity slider like everything else, so 0% still means no
+    // effect, but the toggle itself is what decides how strong the ceiling
+    // is rather than leaving it to automatic detection.
+    const forcedBlackBg = !!item.blackBackground;
+    // The per-photo "STRENGTH" slider scales how strongly the toggle's
+    // effect applies, independent of the main correction intensity above —
+    // 100% is the full forced maximum, 0% falls back toward the same
+    // automatic estimate a photo without the toggle would get.
+    const bgIntensity = clamp((item.blackBackgroundIntensity??100)/100,0,1);
+    const baseCrush = forcedBlackBg ? (f.shadowCrush||.30)+(1.0-(f.shadowCrush||.30))*bgIntensity : (f.shadowCrush||.30);
+    const crushAmt=baseCrush*strength, toe=forcedBlackBg?85:46;
+    // Prefer the real AI segmentation result (item.aiMaskCanvas, set by
+    // computeAISegmentationMask once the user has enabled the toggle) —
+    // it traces the actual subject outline instead of guessing from local
+    // pixel statistics. Resized here to match this canvas's own resolution
+    // via drawImage, since correction runs at several different resolutions
+    // (small live preview, full-res download) but the AI mask is only
+    // computed once per photo. Falls back to the brightness/blur heuristic
+    // when the AI mask isn't available yet (still loading, failed, or the
+    // CDN was unreachable) so the toggle still does *something* reasonable.
+    let focusMask = null;
+    if(forcedBlackBg){
+      if(item.aiMaskCanvas){
+        const rc=document.createElement('canvas');
+        rc.width=canvas.width; rc.height=canvas.height;
+        // The mask covers the full, uncropped photo (it's computed once from
+        // item.url), but this canvas may only be showing a cropped region of
+        // it — extract the matching sub-rectangle first, using the same
+        // fractional crop the image itself uses, rather than stretching the
+        // whole mask to fit and misaligning it with what's actually visible.
+        const c=item.crop||{x:0,y:0,w:1,h:1};
+        const mw=item.aiMaskCanvas.width, mh=item.aiMaskCanvas.height;
+        rc.getContext('2d').drawImage(item.aiMaskCanvas, c.x*mw, c.y*mh, c.w*mw, c.h*mh, 0, 0, canvas.width, canvas.height);
+        const alphaData=rc.getContext('2d').getImageData(0,0,canvas.width,canvas.height).data;
+        focusMask=new Float32Array(canvas.width*canvas.height);
+        for(let p=0;p<focusMask.length;p++) focusMask[p]=1-alphaData[p*4+3]/255;
+      } else {
+        // For a genuinely bright, out-of-focus background (not just dark
+        // water), brightness-based crushing above has nothing to work
+        // with — a blurry backdrop can be just as bright as the subject.
+        // This heuristic targets that case specifically as a fallback.
+        focusMask=computeFocusBackgroundMask(d, canvas.width, canvas.height);
+      }
+    }
+    if(focusMask){
+      // Protective dilation: pull each pixel's background-likelihood toward
+      // the minimum found in a small neighborhood, so a confidently-detected
+      // subject pixel "bleeds" a little protection onto its immediate
+      // surroundings — exactly where a thin structure's own edge pixels are
+      // most likely to have been scored ambiguously. A min-filter is
+      // separable (min over a box = min of column-mins), so this stays cheap
+      // even at full photo resolution: two passes, radius 2 each.
+      const mw=canvas.width, mh=canvas.height, R=2;
+      const tmp=new Float32Array(focusMask.length);
+      for(let y=0;y<mh;y++){
+        const row=y*mw;
+        for(let x=0;x<mw;x++){
+          let m=1;
+          for(let ox=-R;ox<=R;ox++){ const v=focusMask[row+clamp(x+ox,0,mw-1)]; if(v<m) m=v; }
+          tmp[row+x]=m;
+        }
+      }
+      for(let x=0;x<mw;x++){
+        for(let y=0;y<mh;y++){
+          let m=1;
+          for(let oy=-R;oy<=R;oy++){ const v=tmp[clamp(y+oy,0,mh-1)*mw+x]; if(v<m) m=v; }
+          focusMask[y*mw+x]=m;
+        }
+      }
+    }
 
     for(let i=0;i<d.length;i+=4){
       const or=d[i],og=d[i+1],ob=d[i+2],oldL=.2126*or+.7152*og+.0722*ob;
       const redSat=or>og*1.22&&or>ob*1.28&&or>120;
       const hi=smoothstep(145,245,oldL);
       const redGain=redSat?1+(gainR-1)*.18:1+(gainR-1)*(1-hi*.80);
-      let r=or*redGain*lumScale,g=og*lumScale,b=ob*gainB*lumScale;
+      let r=or*redGain*lumScale,g=og*gainGCh*lumScale,b=ob*gainB*lumScale;
       let y=.2126*r+.7152*g+.0722*b;
       let yn=(y-blackPoint)/(whitePoint-blackPoint)*255;
       yn*=exposure;
@@ -856,6 +1119,14 @@
       // passes through this untouched — this is what separates a punchy
       // black background from a globally darkened image.
       if(yn<toe && crushAmt>0){const t=clamp(yn/toe,0,1); yn=toe*Math.pow(t,1+crushAmt*2.0);}
+      if(focusMask){
+        // Blurry (high background-likelihood) pixels get pushed toward black
+        // regardless of brightness — this is what handles a bright,
+        // out-of-focus backdrop that the brightness-only toe crush above
+        // can't touch, since it never even qualifies as "dark" to begin with.
+        const bg=focusMask[i>>2];
+        if(bg>0) yn*=(1-bg*strength*bgIntensity);
+      }
       yn=(yn-122)*contrast+122;
       if(yn>220) yn=220+(yn-220)/(1+(yn-220)/38);
       yn=clamp(yn,0,253);
@@ -1280,6 +1551,57 @@
     intensityRow.appendChild(itemSlider);
     intensityRow.appendChild(itemVal);
 
+    let bgRow = null;
+    if(item.type === 'image'){
+      bgRow = document.createElement('label'); bgRow.className = 'bg-toggle-row';
+      const bgCheckbox = document.createElement('input');
+      bgCheckbox.type = 'checkbox';
+      bgCheckbox.checked = !!item.blackBackground;
+      const bgLabelText = document.createElement('span');
+      bgLabelText.textContent = 'Black background';
+      bgRow.appendChild(bgCheckbox);
+      bgRow.appendChild(bgLabelText);
+      bgCheckbox.addEventListener('change', async () => {
+        item.blackBackground = bgCheckbox.checked;
+        // Run AI subject detection once per photo, the first time it's
+        // actually needed — not on every toggle or re-render, since
+        // inference is real, non-trivial work. If it already ran (success
+        // or failure) for this item, this is skipped and the cached result
+        // (or fallback) is reused.
+        if(item.blackBackground && !item.aiMaskCanvas && !item.aiMaskFailed){
+          bgLabelText.textContent = 'Detecting subject…';
+          bgCheckbox.disabled = true;
+          try{
+            await computeAISegmentationMask(item, (pct) => { bgLabelText.textContent = `Detecting subject… ${pct}%`; });
+          }catch(err){
+            console.warn('AI subject detection failed, falling back to a brightness/blur estimate:', err);
+            item.aiMaskFailed = true;
+          }
+          bgLabelText.textContent = 'Black background';
+          bgCheckbox.disabled = false;
+        }
+        if(item.ready){ renderImage(item, false); scheduleCorrectedCanvasRebuild(item); }
+      });
+      item.blackBgCheckbox = bgCheckbox;
+
+      const bgIntensityRow = document.createElement('div');
+      bgIntensityRow.className = 'bg-intensity-row';
+      bgIntensityRow.hidden = !item.blackBackground;
+      const bgIntensityLabel = document.createElement('span'); bgIntensityLabel.className = 'mono'; bgIntensityLabel.textContent = 'STRENGTH';
+      const bgIntensitySlider = document.createElement('input');
+      bgIntensitySlider.type = 'range'; bgIntensitySlider.min = 0; bgIntensitySlider.max = 100;
+      bgIntensitySlider.value = item.blackBackgroundIntensity;
+      const bgIntensityVal = document.createElement('span'); bgIntensityVal.className = 'item-intensity-val'; bgIntensityVal.textContent = item.blackBackgroundIntensity + '%';
+      bgIntensitySlider.addEventListener('input', () => {
+        item.blackBackgroundIntensity = Number(bgIntensitySlider.value);
+        bgIntensityVal.textContent = item.blackBackgroundIntensity + '%';
+        if(item.ready){ renderImage(item, false); scheduleCorrectedCanvasRebuild(item); }
+      });
+      bgIntensityRow.append(bgIntensityLabel, bgIntensitySlider, bgIntensityVal);
+      bgCheckbox.addEventListener('change', () => { bgIntensityRow.hidden = !bgCheckbox.checked; });
+      item.bgIntensityRow = bgIntensityRow;
+    }
+
     const actions = document.createElement('div'); actions.className = 'card-actions';
     const downloadBtn = document.createElement('button');
     downloadBtn.className = 'btn btn-small btn-primary'; downloadBtn.textContent = 'Download';
@@ -1303,6 +1625,8 @@
     body.appendChild(fname);
     body.appendChild(meta);
     body.appendChild(intensityRow);
+    if(bgRow) body.appendChild(bgRow);
+    if(bgRow) body.appendChild(item.bgIntensityRow);
 
     const editPanel=document.createElement('div'); editPanel.className='edit-panel';
     const editTitle=document.createElement('div'); editTitle.className='edit-title'; editTitle.textContent=item.type==='image'?'CROP PHOTO':'TRIM VIDEO';
@@ -2174,6 +2498,8 @@
         intensity: Number(globalIntensity.value),
         crop: {x:0,y:0,w:1,h:1},
         trimStart: 0, trimEnd: 0,
+        blackBackground: false,
+        blackBackgroundIntensity: 100,
         ready: false
       };
       items.push(item);
