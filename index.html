@@ -525,7 +525,7 @@
 
   </main>
 
-  <footer>RESURFACE v3.9 · smooth multi-photo editing and queued video export · runs entirely in your browser · BUILD 2026-07-29-D</footer>
+  <footer>RESURFACE v3.9 · smooth multi-photo editing and queued video export · runs entirely in your browser · BUILD 2026-07-29-E</footer>
 </div>
 
 <svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs id="filterDefs"></defs></svg>
@@ -2019,17 +2019,16 @@
       // captured frame in memory at once until the final encode step, so an
       // uncapped native 4K clip could mean gigabytes of JPEG frames sitting
       // in memory simultaneously. The cap itself is adaptive: a source that's
-      // already 4K or larger is capped more aggressively (1280px instead of
-      // 1920px) since that's exactly the case most likely to exceed a
-      // device's available memory — a 14-second 4K clip is still ~336
-      // individual frame images that all have to coexist in memory before
-      // the final encode can run, even after removing the earlier issue
-      // where the full original file and all the frames overlapped in
-      // memory too. A normal 1080p-or-smaller source keeps the higher
-      // 1920px cap unchanged, since it was never the case causing trouble.
+      // already 4K or larger is capped much more aggressively (960px instead
+      // of 1920px) since that's exactly the case confirmed to be exceeding
+      // available memory during the encode step itself — not just from
+      // holding the captured frames, but from the decoder/encoder's own
+      // working memory while actually processing them. A normal
+      // 1080p-or-smaller source keeps the higher 1920px cap unchanged, since
+      // it was never the case causing trouble.
       const vr = cropRect(item, v.videoWidth, v.videoHeight);
       const sourceIsVeryLarge = Math.max(v.videoWidth, v.videoHeight) >= 2160;
-      const MAX_DIM = sourceIsVeryLarge ? 1280 : 1920;
+      const MAX_DIM = sourceIsVeryLarge ? 960 : 1920;
       const scale = Math.min(1, MAX_DIM/Math.max(vr.sw, vr.sh));
       const exportW = Math.max(2, Math.round(vr.sw*scale));
       const exportH = Math.max(2, Math.round(vr.sh*scale));
@@ -2039,7 +2038,10 @@
       // to be seeked/captured and how many need encoding — the two biggest
       // costs in this whole process — with minimal visible difference for
       // typical footage (24fps is also the standard cinematic frame rate).
-      const FPS = 24;
+      // Very large sources get an additional cut to 18fps, on top of the
+      // resolution reduction above — fewer total frames means less total
+      // memory the encoder has to hold and process at once.
+      const FPS = sourceIsVeryLarge ? 18 : 24;
       const totalFrames = Math.max(1, Math.round(clipDur*FPS));
 
       const canvas = document.createElement('canvas');
