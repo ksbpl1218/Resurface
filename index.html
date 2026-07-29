@@ -525,7 +525,7 @@
 
   </main>
 
-  <footer>RESURFACE v3.9 · smooth multi-photo editing and queued video export · runs entirely in your browser · BUILD 2026-07-29-E</footer>
+  <footer>RESURFACE v3.9 · smooth multi-photo editing and queued video export · runs entirely in your browser · BUILD 2026-07-29-F</footer>
 </div>
 
 <svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs id="filterDefs"></defs></svg>
@@ -2151,20 +2151,11 @@
         throw new Error(`The encoder itself failed (${err && err.message ? err.message : err}). This usually means one of the captured frames or the source audio couldn't be read — try re-uploading this clip.`);
       }
 
-      let outputInfo;
-      try{
-        outputInfo = ff.FS('analyzePath', outName);
-      }catch(err){
-        throw new Error(`Could not check whether the encoded file was created (${err && err.message ? err.message : err}).`);
-      }
-      if(!outputInfo || !outputInfo.exists){
-        throw new Error('The encoder finished without creating the MP4 file. Please retry this clip after the current export queue has completed.');
-      }
       let data;
       try{
         data = ff.FS('readFile', outName);
       }catch(err){
-        throw new Error(`The encoded file exists but could not be read back out (${err && err.message ? err.message : err}). This can happen if the device is low on memory — try closing other tabs/apps and retrying.`);
+        throw new Error(`The encoder did not produce a readable output file (${err && err.message ? err.message : err}). This can happen if the device ran low on memory during encoding — try closing other tabs/apps and retrying, or try a shorter clip.`);
       }
       const blob = new Blob([data.buffer], {type:'video/mp4'});
       if(!blob.size) throw new Error('Encoding produced no data');
